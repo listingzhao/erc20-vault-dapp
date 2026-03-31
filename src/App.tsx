@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { ethers } from "ethers";
 
+const hasErrorCode = (
+  error: unknown,
+): error is {
+  code: number | string;
+} => typeof error === "object" && error !== null && "code" in error;
+
 function App() {
   const [account, setAccount] = useState("");
   const [balance, setBalance] = useState("");
@@ -45,14 +51,14 @@ function App() {
 
   const BANK_ADDRESS = "0x254B9245f2F5b18546Aa085F2b5493ea98Fefe71";
 
-  const getChainName = (id) => {
-    const map = {
+  const getChainName = (id: string) => {
+    const map: Record<string, string> = {
       "0x1": "Ethereum Mainnet",
       "0xaa36a7": "Sepolia",
       "0x89": "Polygon",
       "0x38": "BNB Smart Chain",
     };
-    return map[id] || `Unknown Network (${id})`;
+    return map[id] ?? `Unknown Network (${id})`;
   };
 
   const resetState = useCallback(() => {
@@ -60,16 +66,16 @@ function App() {
     setBalance("");
   }, []);
 
-  const getTokenContract = useCallback((runner) => {
+  const getTokenContract = useCallback((runner: ethers.ContractRunner) => {
     return new ethers.Contract(TOKEN_ADDRESS, ERC20_ABI, runner);
   }, []);
 
-  const getBankContract = useCallback((runner) => {
+  const getBankContract = useCallback((runner: ethers.ContractRunner) => {
     return new ethers.Contract(BANK_ADDRESS, BANK_ABI, runner);
   }, []);
 
   const loadTokenMeta = useCallback(
-    async (provider) => {
+    async (provider: ethers.ContractRunner) => {
       try {
         const contract = getTokenContract(provider);
         const [decimals, symbol] = await Promise.all([
@@ -88,11 +94,12 @@ function App() {
   );
 
   const loadTokenBalance = useCallback(
-    async (address) => {
-      if (!window.ethereum || !address) return;
+    async (address: string) => {
+      const ethereum = window.ethereum;
+      if (!ethereum || !address) return;
 
       try {
-        const provider = new ethers.BrowserProvider(window.ethereum);
+        const provider = new ethers.BrowserProvider(ethereum);
         const contract = getTokenContract(provider);
         const balance = await contract.balanceOf(address);
         setTokenBalance(ethers.formatUnits(balance, tokenDecimals));
@@ -105,13 +112,14 @@ function App() {
   );
 
   const loadWalletData = useCallback(
-    async (selectedAccount) => {
-      if (!window.ethereum || !selectedAccount) return;
+    async (selectedAccount: string) => {
+      const ethereum = window.ethereum;
+      if (!ethereum || !selectedAccount) return;
 
       try {
         setError("");
 
-        const provider = new ethers.BrowserProvider(window.ethereum);
+        const provider = new ethers.BrowserProvider(ethereum);
 
         const [balanceWei, network] = await Promise.all([
           provider.getBalance(selectedAccount),
@@ -133,19 +141,20 @@ function App() {
   );
 
   const checkIfWalletIsConnected = useCallback(async () => {
-    if (!window.ethereum) return;
+    const ethereum = window.ethereum;
+    if (!ethereum) return;
 
     try {
       setError("");
       setIsLoading(true);
 
-      const accounts = await window.ethereum.request({
+      const accounts = (await ethereum.request({
         method: "eth_accounts",
-      });
+      })) as string[];
 
-      const currentChainId = await window.ethereum.request({
+      const currentChainId = (await ethereum.request({
         method: "eth_chainId",
-      });
+      })) as string;
 
       setChainId(currentChainId);
       setChainName(getChainName(currentChainId));
@@ -164,7 +173,8 @@ function App() {
   }, [loadWalletData, resetState]);
 
   const connectWallet = async () => {
-    if (!window.ethereum) {
+    const ethereum = window.ethereum;
+    if (!ethereum) {
       alert("请先安装 MetaMask");
       return;
     }
@@ -174,13 +184,13 @@ function App() {
       setIsLoading(true);
 
       // 请求连接钱包
-      const accounts = await window.ethereum.request({
+      const accounts = (await ethereum.request({
         method: "eth_requestAccounts",
-      });
+      })) as string[];
       await loadWalletData(accounts[0]);
     } catch (err) {
       console.error(err);
-      if (err.code === 4001) {
+      if (hasErrorCode(err) && err.code === 4001) {
         setError("你取消了钱包连接请求。");
       } else {
         setError("连接钱包失败，请稍后重试。");
@@ -191,7 +201,8 @@ function App() {
   };
 
   const sendTransaction = async () => {
-    if (!window.ethereum) {
+    const ethereum = window.ethereum;
+    if (!ethereum) {
       setError("请先安装 MetaMask");
       return;
     }
@@ -205,7 +216,7 @@ function App() {
       setError("");
       setIsLoading(true);
 
-      const provider = new ethers.BrowserProvider(window.ethereum);
+      const provider = new ethers.BrowserProvider(ethereum);
       const signer = await provider.getSigner();
 
       // 构造交易
@@ -231,7 +242,7 @@ function App() {
     } catch (err) {
       console.error(err);
 
-      if (err.code === 4001) {
+      if (hasErrorCode(err) && err.code === 4001) {
         setError("用户拒绝交易");
       } else {
         setError("交易失败，请检查余额或参数");
@@ -242,7 +253,8 @@ function App() {
   };
 
   const sendToken = async () => {
-    if (!window.ethereum) {
+    const ethereum = window.ethereum;
+    if (!ethereum) {
       setError("请先安装 MetaMask");
       return;
     }
@@ -256,7 +268,7 @@ function App() {
       setIsLoading(true);
       setTxHash("");
 
-      const provider = new ethers.BrowserProvider(window.ethereum);
+      const provider = new ethers.BrowserProvider(ethereum);
       const signer = await provider.getSigner();
 
       const contract = getTokenContract(signer);
@@ -276,7 +288,7 @@ function App() {
       await loadTokenBalance(address);
     } catch (err) {
       console.error(err);
-      if (err.code === 4001) {
+      if (hasErrorCode(err) && err.code === 4001) {
         setError("用户拒绝 Token 交易");
       } else {
         setError("Token 转账失败，请检查地址、余额或合约地址");
@@ -288,7 +300,8 @@ function App() {
 
   // 查询 allowance
   const getAllowance = async () => {
-    if (!window.ethereum) {
+    const ethereum = window.ethereum;
+    if (!ethereum) {
       setError("请先安装 MetaMask");
       return;
     }
@@ -301,7 +314,7 @@ function App() {
     try {
       setError("");
 
-      const provider = new ethers.BrowserProvider(window.ethereum);
+      const provider = new ethers.BrowserProvider(ethereum);
       const contract = getTokenContract(provider);
 
       const result = await contract.allowance(account, spenderAddress);
@@ -314,7 +327,8 @@ function App() {
 
   // 发起 approve
   const approveToken = async () => {
-    if (!window.ethereum) {
+    const ethereum = window.ethereum;
+    if (!ethereum) {
       setError("请先安装 MetaMask");
       return;
     }
@@ -329,7 +343,7 @@ function App() {
       setIsLoading(true);
       setTxHash("");
 
-      const provider = new ethers.BrowserProvider(window.ethereum);
+      const provider = new ethers.BrowserProvider(ethereum);
       const signer = await provider.getSigner();
       const contract = getTokenContract(signer);
 
@@ -346,7 +360,7 @@ function App() {
     } catch (err) {
       console.error(err);
 
-      if (err.code === 4001) {
+      if (hasErrorCode(err) && err.code === 4001) {
         setError("用户拒绝授权交易");
       } else {
         setError("授权失败，请检查参数");
@@ -356,9 +370,12 @@ function App() {
     }
   };
 
-  const getDepositInfo = async (addr) => {
+  const getDepositInfo = async (addr: string) => {
+    const ethereum = window.ethereum;
+    if (!ethereum) return;
+
     try {
-      const provider = new ethers.BrowserProvider(window.ethereum);
+      const provider = new ethers.BrowserProvider(ethereum);
       const contract = getBankContract(provider);
 
       const result = await contract.deposits(addr);
@@ -369,8 +386,11 @@ function App() {
   };
 
   const getBankBalance = async () => {
+    const ethereum = window.ethereum;
+    if (!ethereum) return;
+
     try {
-      const provider = new ethers.BrowserProvider(window.ethereum);
+      const provider = new ethers.BrowserProvider(ethereum);
       const contract = getBankContract(provider);
 
       const result = await contract.getContractTokenBalance();
@@ -382,7 +402,8 @@ function App() {
 
   // 存入 deposit
   const depositToken = async () => {
-    if (!window.ethereum) {
+    const ethereum = window.ethereum;
+    if (!ethereum) {
       setError("请先安装 MetaMask");
       return;
     }
@@ -397,7 +418,7 @@ function App() {
       setIsLoading(true);
       setTxHash("");
 
-      const provider = new ethers.BrowserProvider(window.ethereum);
+      const provider = new ethers.BrowserProvider(ethereum);
       const signer = await provider.getSigner();
 
       const contract = getBankContract(signer);
@@ -441,9 +462,10 @@ function App() {
   }, [account]);
 
   useEffect(() => {
-    if (!window.ethereum) return;
+    const ethereum = window.ethereum;
+    if (!ethereum) return;
 
-    const handleAccountsChanged = async (accounts) => {
+    const handleAccountsChanged = async (accounts: string[]) => {
       if (accounts.length === 0) {
         resetState();
         setError("钱包已断开连接。");
@@ -455,13 +477,13 @@ function App() {
       setIsLoading(false);
     };
 
-    const handleChainChanged = async (newChainId) => {
+    const handleChainChanged = async (newChainId: string) => {
       setChainId(newChainId);
       setChainName(getChainName(newChainId));
 
-      const accounts = await window.ethereum.request({
+      const accounts = (await ethereum.request({
         method: "eth_accounts",
-      });
+      })) as string[];
 
       if (accounts.length > 0) {
         setIsLoading(true);
@@ -469,12 +491,12 @@ function App() {
         setIsLoading(false);
       }
     };
-    window.ethereum.on("accountsChanged", handleAccountsChanged);
-    window.ethereum.on("chainChanged", handleChainChanged);
+    ethereum.on("accountsChanged", handleAccountsChanged);
+    ethereum.on("chainChanged", handleChainChanged);
 
     return () => {
-      window.ethereum.removeListener("accountsChanged", handleAccountsChanged);
-      window.ethereum.removeListener("chainChanged", handleChainChanged);
+      ethereum.removeListener("accountsChanged", handleAccountsChanged);
+      ethereum.removeListener("chainChanged", handleChainChanged);
     };
   }, [loadWalletData, resetState]);
 

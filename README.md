@@ -1,4 +1,4 @@
-# Web3 ERC20 Vault Demo
+# ERC20 Vault DApp
 
 一个基于 React + ethers.js 的 Web3 前端项目，实现 ERC20 Token 授权与代扣（approve + transferFrom）流程。
 
@@ -16,6 +16,14 @@ https://erc20-vault-dapp.vercel.app/
 - 查询授权额度（allowance）
 - Token 存入（deposit，合约通过 transferFrom 代扣）
 - 显示用户存款与合约总余额
+
+## 🔄 交易流程说明
+
+1. 用户连接钱包
+2. 调用 approve 授权 TokenBank
+3. 调用 deposit
+4. TokenBank 内部执行 transferFrom
+5. 更新链上状态并返回结果
 
 ## 🧩 架构说明
 

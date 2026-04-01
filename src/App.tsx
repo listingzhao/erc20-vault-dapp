@@ -7,12 +7,23 @@ const hasErrorCode = (
   code: number | string;
 } => typeof error === "object" && error !== null && "code" in error;
 
+type TxAction =
+  | "nativeTransfer"
+  | "tokenTransfer"
+  | "approve"
+  | "deposit"
+  | null;
+
 function App() {
   const [account, setAccount] = useState("");
   const [balance, setBalance] = useState("");
   const [chainId, setChainId] = useState("");
   const [chainName, setChainName] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [txStatus, setTxStatus] = useState<
+    "idle" | "pending" | "success" | "error"
+  >("idle");
+  const [txAction, setTxAction] = useState<TxAction>(null);
   const [error, setError] = useState("");
   const [toAddress, setToAddress] = useState("");
   const [amount, setAmount] = useState("");
@@ -45,11 +56,63 @@ function App() {
   const [userDeposit, setUserDeposit] = useState("");
   const [bankBalance, setBankBalance] = useState("");
 
-  // 0x49E1eA0Ac248EDED371043389d32580c2b9D12f3
-  // 0xfC418b3CbeD2EbBe262180c9b7921B2dA0a26FB8
   const TOKEN_ADDRESS = "0xfC418b3CbeD2EbBe262180c9b7921B2dA0a26FB8";
-
   const BANK_ADDRESS = "0x254B9245f2F5b18546Aa085F2b5493ea98Fefe71";
+
+  const formatAddress = (addr: string) => {
+    if (!addr) return "";
+    return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+  };
+
+  const resetTxFeedback = useCallback(() => {
+    setTxAction(null);
+    setTxStatus("idle");
+    setTxHash("");
+  }, []);
+
+  const beginTx = (action: Exclude<TxAction, null>) => {
+    setTxAction(action);
+    setTxStatus("pending");
+    setTxHash("");
+  };
+
+  const isTxPending = (action: Exclude<TxAction, null>) =>
+    isLoading && txAction === action && txStatus === "pending";
+
+  const renderTxFeedback = (action: Exclude<TxAction, null>) => {
+    if (txAction !== action || txStatus === "idle") return null;
+
+    const statusText = {
+      pending: "Awaiting confirmation...",
+      success: "Transaction confirmed.",
+      error: "Transaction failed.",
+    }[txStatus];
+
+    const statusColor = {
+      pending: "#856404",
+      success: "#067647",
+      error: "#b42318",
+    }[txStatus];
+
+    return (
+      <>
+        <p style={{ marginTop: 12, color: statusColor }}>{statusText}</p>
+        {txHash && (
+          <p style={{ marginTop: 12, wordBreak: "break-all" }}>
+            <strong>Tx Hash: </strong>
+            {txHash}{" "}
+            <a
+              href={`https://sepolia.etherscan.io/tx/${txHash}`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              View on Etherscan
+            </a>
+          </p>
+        )}
+      </>
+    );
+  };
 
   const getChainName = (id: string) => {
     const map: Record<string, string> = {
@@ -64,7 +127,8 @@ function App() {
   const resetState = useCallback(() => {
     setAccount("");
     setBalance("");
-  }, []);
+    resetTxFeedback();
+  }, [resetTxFeedback]);
 
   const getTokenContract = useCallback((runner: ethers.ContractRunner) => {
     return new ethers.Contract(TOKEN_ADDRESS, ERC20_ABI, runner);
@@ -87,7 +151,7 @@ function App() {
         setTokenSymbol(symbol);
       } catch (err) {
         console.error(err);
-        setError("读取 Token 信息失败，请检查合约地址。");
+        setError("Failed to load token metadata. Please verify the token contract.");
       }
     },
     [getTokenContract],
@@ -101,11 +165,11 @@ function App() {
       try {
         const provider = new ethers.BrowserProvider(ethereum);
         const contract = getTokenContract(provider);
-        const balance = await contract.balanceOf(address);
-        setTokenBalance(ethers.formatUnits(balance, tokenDecimals));
+        const tokenBalanceValue = await contract.balanceOf(address);
+        setTokenBalance(ethers.formatUnits(tokenBalanceValue, tokenDecimals));
       } catch (err) {
         console.error(err);
-        setError("读取 Token 余额失败。");
+        setError("Failed to load token balance.");
       }
     },
     [getTokenContract, tokenDecimals],
@@ -134,7 +198,7 @@ function App() {
         await loadTokenMeta(provider);
       } catch (err) {
         console.error(err);
-        setError("读取钱包信息失败，请稍后重试。");
+        setError("Failed to load wallet data. Please try again.");
       }
     },
     [loadTokenMeta],
@@ -166,7 +230,7 @@ function App() {
       }
     } catch (err) {
       console.error(err);
-      setError("检测钱包连接状态失败。");
+      setError("Failed to detect wallet connection status.");
     } finally {
       setIsLoading(false);
     }
@@ -175,7 +239,12 @@ function App() {
   const connectWallet = async () => {
     const ethereum = window.ethereum;
     if (!ethereum) {
-      alert("请先安装 MetaMask");
+      alert("Please install MetaMask first.");
+      return;
+    }
+
+    if (!isSepolia) {
+      setError("Wrong network. Please switch to Sepolia.");
       return;
     }
 
@@ -183,7 +252,6 @@ function App() {
       setError("");
       setIsLoading(true);
 
-      // 请求连接钱包
       const accounts = (await ethereum.request({
         method: "eth_requestAccounts",
       })) as string[];
@@ -191,9 +259,9 @@ function App() {
     } catch (err) {
       console.error(err);
       if (hasErrorCode(err) && err.code === 4001) {
-        setError("你取消了钱包连接请求。");
+        setError("Wallet connection request was rejected.");
       } else {
-        setError("连接钱包失败，请稍后重试。");
+        setError("Failed to connect wallet. Please try again.");
       }
     } finally {
       setIsLoading(false);
@@ -203,49 +271,56 @@ function App() {
   const sendTransaction = async () => {
     const ethereum = window.ethereum;
     if (!ethereum) {
-      setError("请先安装 MetaMask");
+      setError("MetaMask is not installed.");
       return;
     }
 
+    if (!isSepolia) {
+      setError("Wrong network. Please switch to Sepolia.");
+      return;
+    }
+
+    setTxAction("nativeTransfer");
+    setTxStatus("idle");
+    setTxHash("");
+
     if (!toAddress || !amount) {
-      setError("请输入地址和金额");
+      setError("Enter a recipient address and amount.");
       return;
     }
 
     try {
       setError("");
       setIsLoading(true);
+      beginTx("nativeTransfer");
 
       const provider = new ethers.BrowserProvider(ethereum);
       const signer = await provider.getSigner();
 
-      // 构造交易
       const tx = await signer.sendTransaction({
         to: toAddress,
         value: ethers.parseEther(amount),
       });
 
-      console.log("tx:", tx);
-
-      // 拿到交易 hash
       setTxHash(tx.hash);
-
-      // 等待链确认
       await tx.wait();
 
-      alert("交易成功！");
-
-      // 更新余额
+      setTxStatus("success");
       const address = await signer.getAddress();
       await loadWalletData(address);
       await loadTokenBalance(address);
     } catch (err) {
       console.error(err);
+      setTxStatus("error");
 
       if (hasErrorCode(err) && err.code === 4001) {
-        setError("用户拒绝交易");
+        setError("Transaction was rejected.");
+      } else if (String(err).includes("insufficient funds")) {
+        setError("Insufficient balance.");
+      } else if (String(err).includes("allowance")) {
+        setError("Insufficient allowance.");
       } else {
-        setError("交易失败，请检查余额或参数");
+        setError("Transaction failed.");
       }
     } finally {
       setIsLoading(false);
@@ -255,22 +330,31 @@ function App() {
   const sendToken = async () => {
     const ethereum = window.ethereum;
     if (!ethereum) {
-      setError("请先安装 MetaMask");
+      setError("MetaMask is not installed.");
       return;
     }
 
-    if (!toAddress || !amount) {
-      setError("请输入地址和金额");
+    if (!isSepolia) {
+      setError("Wrong network. Please switch to Sepolia.");
       return;
     }
+
+    setTxAction("tokenTransfer");
+    setTxStatus("idle");
+    setTxHash("");
+
+    if (!toAddress || !amount) {
+      setError("Enter a recipient address and amount.");
+      return;
+    }
+
     try {
       setError("");
       setIsLoading(true);
-      setTxHash("");
+      beginTx("tokenTransfer");
 
       const provider = new ethers.BrowserProvider(ethereum);
       const signer = await provider.getSigner();
-
       const contract = getTokenContract(signer);
 
       const tx = await contract.transfer(
@@ -279,35 +363,44 @@ function App() {
       );
 
       setTxHash(tx.hash);
-
       await tx.wait();
+      setTxStatus("success");
 
-      alert(`${tokenSymbol} 转账成功！`);
       const address = await signer.getAddress();
       await loadWalletData(address);
       await loadTokenBalance(address);
     } catch (err) {
       console.error(err);
+      setTxStatus("error");
+
       if (hasErrorCode(err) && err.code === 4001) {
-        setError("用户拒绝 Token 交易");
+        setError("Transaction was rejected.");
+      } else if (String(err).includes("insufficient funds")) {
+        setError("Insufficient balance.");
+      } else if (String(err).includes("allowance")) {
+        setError("Insufficient allowance.");
       } else {
-        setError("Token 转账失败，请检查地址、余额或合约地址");
+        setError("Transaction failed.");
       }
     } finally {
       setIsLoading(false);
     }
   };
 
-  // 查询 allowance
   const getAllowance = async () => {
     const ethereum = window.ethereum;
     if (!ethereum) {
-      setError("请先安装 MetaMask");
+      setError("MetaMask is not installed.");
+      return;
+    }
+
+    if (!isSepolia) {
+      setError("Wrong network. Please switch to Sepolia.");
       return;
     }
 
     if (!account || !spenderAddress) {
-      setError("请先连接钱包并输入 spender 地址");
+      setError("Connect your wallet and enter a spender address.");
       return;
     }
 
@@ -321,27 +414,35 @@ function App() {
       setAllowanceValue(ethers.formatUnits(result, tokenDecimals));
     } catch (err) {
       console.error(err);
-      setError("读取 allowance 失败");
+      setError("Failed to load allowance.");
     }
   };
 
-  // 发起 approve
   const approveToken = async () => {
     const ethereum = window.ethereum;
     if (!ethereum) {
-      setError("请先安装 MetaMask");
+      setError("MetaMask is not installed.");
       return;
     }
 
+    if (!isSepolia) {
+      setError("Wrong network. Please switch to Sepolia.");
+      return;
+    }
+
+    setTxAction("approve");
+    setTxStatus("idle");
+    setTxHash("");
+
     if (!spenderAddress || !approveAmount) {
-      setError("请输入 spender 地址和授权金额");
+      setError("Enter a spender address and approval amount.");
       return;
     }
 
     try {
       setError("");
       setIsLoading(true);
-      setTxHash("");
+      beginTx("approve");
 
       const provider = new ethers.BrowserProvider(ethereum);
       const signer = await provider.getSigner();
@@ -354,16 +455,18 @@ function App() {
 
       setTxHash(tx.hash);
       await tx.wait();
+      setTxStatus("success");
 
       await getAllowance();
-      alert(`授权 ${approveAmount} ${tokenSymbol} 成功`);
+      alert(`Approved ${approveAmount} ${tokenSymbol} for spending.`);
     } catch (err) {
       console.error(err);
+      setTxStatus("error");
 
       if (hasErrorCode(err) && err.code === 4001) {
-        setError("用户拒绝授权交易");
+        setError("Approval transaction was rejected.");
       } else {
-        setError("授权失败，请检查参数");
+        setError("Approval failed. Please review the transaction details.");
       }
     } finally {
       setIsLoading(false);
@@ -400,27 +503,39 @@ function App() {
     }
   };
 
-  // 存入 deposit
   const depositToken = async () => {
     const ethereum = window.ethereum;
     if (!ethereum) {
-      setError("请先安装 MetaMask");
+      setError("MetaMask is not installed.");
       return;
     }
 
+    if (!isSepolia) {
+      setError("Wrong network. Please switch to Sepolia.");
+      return;
+    }
+
+    setTxAction("deposit");
+    setTxStatus("idle");
+    setTxHash("");
+
     if (!depositAmount) {
-      setError("请输入存入金额");
+      setError("Enter an amount to deposit.");
+      return;
+    }
+
+    if (Number(allowanceValue) < Number(depositAmount)) {
+      setError("Allowance too low. Approve tokens before depositing.");
       return;
     }
 
     try {
       setError("");
       setIsLoading(true);
-      setTxHash("");
+      beginTx("deposit");
 
       const provider = new ethers.BrowserProvider(ethereum);
       const signer = await provider.getSigner();
-
       const contract = getBankContract(signer);
 
       const tx = await contract.deposit(
@@ -429,23 +544,37 @@ function App() {
 
       setTxHash(tx.hash);
       await tx.wait();
-
-      alert("存入成功！");
+      setTxStatus("success");
 
       const address = await signer.getAddress();
       await loadTokenBalance(address);
       await getDepositInfo(address);
       await getBankBalance();
-      if(spenderAddress) {
+      if (spenderAddress) {
         await getAllowance();
       }
     } catch (err) {
       console.error(err);
-      setError("deposit 失败（可能没 approve 或额度不够）");
+      setTxStatus("error");
+
+      if (hasErrorCode(err) && err.code === 4001) {
+        setError("Transaction was rejected.");
+      } else if (String(err).includes("insufficient funds")) {
+        setError("Insufficient balance.");
+      } else if (String(err).includes("allowance")) {
+        setError("Insufficient allowance.");
+      } else {
+        setError("Transaction failed.");
+      }
     } finally {
       setIsLoading(false);
     }
   };
+
+  useEffect(() => {
+    setSpenderAddress(BANK_ADDRESS);
+  }, []);
+
   useEffect(() => {
     checkIfWalletIsConnected();
   }, [checkIfWalletIsConnected]);
@@ -468,11 +597,12 @@ function App() {
     const handleAccountsChanged = async (accounts: string[]) => {
       if (accounts.length === 0) {
         resetState();
-        setError("钱包已断开连接。");
+        setError("Wallet disconnected.");
         return;
       }
 
       setIsLoading(true);
+      resetTxFeedback();
       await loadWalletData(accounts[0]);
       setIsLoading(false);
     };
@@ -487,10 +617,12 @@ function App() {
 
       if (accounts.length > 0) {
         setIsLoading(true);
+        resetTxFeedback();
         await loadWalletData(accounts[0]);
         setIsLoading(false);
       }
     };
+
     ethereum.on("accountsChanged", handleAccountsChanged);
     ethereum.on("chainChanged", handleChainChanged);
 
@@ -498,7 +630,7 @@ function App() {
       ethereum.removeListener("accountsChanged", handleAccountsChanged);
       ethereum.removeListener("chainChanged", handleChainChanged);
     };
-  }, [loadWalletData, resetState]);
+  }, [loadWalletData, resetState, resetTxFeedback]);
 
   const isSepolia = chainId.toLowerCase() === "0xaa36a7";
 
@@ -513,8 +645,9 @@ function App() {
         fontFamily: "Arial, sans-serif",
       }}
     >
-      <h1 style={{ marginTop: 0 }}>Web3 Wallet + ERC20 Demo</h1>
-      <p>连接钱包、读取 ETH / Token 余额，并发起 ETH / Token 转账。</p>
+      <h1 style={{ marginTop: 0 }}>ERC20 Vault DApp</h1>
+      <p>Connect your wallet, approve ERC20 spending, and deposit tokens into a vault.</p>
+      <p>Demonstrates a standard DeFi flow: approve -&gt; transferFrom -&gt; deposit.</p>
 
       {!window.ethereum && (
         <div
@@ -526,7 +659,13 @@ function App() {
             marginBottom: "16px",
           }}
         >
-          检测到当前浏览器未安装 MetaMask。
+          MetaMask was not detected in this browser.
+        </div>
+      )}
+
+      {!isSepolia && account && (
+        <div style={{ background: "#fff3cd", padding: 12 }}>
+          Switch to Sepolia to continue.
         </div>
       )}
 
@@ -555,41 +694,45 @@ function App() {
           fontSize: "16px",
         }}
       >
-        {isLoading ? "处理中..." : account ? "重新连接钱包" : "连接钱包"}
+        {isLoading
+          ? "Processing..."
+          : account
+            ? "Reconnect Wallet"
+            : "Connect Wallet"}
       </button>
 
       <div style={{ marginTop: "24px", lineHeight: 1.8 }}>
         <p>
-          <strong>当前网络：</strong>
-          {chainName || "未获取"}
+          <strong>Network:</strong>
+          {chainName || "Unavailable"}
         </p>
         <p>
-          <strong>Chain ID：</strong>
-          {chainId || "未获取"}
+          <strong>Chain ID:</strong>
+          {chainId || "Unavailable"}
         </p>
         <p>
-          <strong>是否为 Sepolia：</strong>
-          {chainId ? (isSepolia ? "是" : "否") : "未获取"}
+          <strong>Sepolia:</strong>
+          {chainId ? (isSepolia ? "Connected" : "Not connected") : "Unavailable"}
         </p>
         <p>
-          <strong>钱包地址：</strong>
-          {account || "未连接"}
+          <strong>Wallet:</strong>
+          {account ? formatAddress(account) : "Not connected"}
         </p>
         <p>
-          <strong>ETH 余额：</strong>
-          {balance ? `${balance} ETH` : "未获取"}
+          <strong>ETH Balance:</strong>
+          {balance ? `${balance} ETH` : "Unavailable"}
         </p>
         <p>
-          <strong>{tokenSymbol} 余额：</strong>
-          {tokenBalance || "未获取"}
+          <strong>{tokenSymbol} Balance:</strong>
+          {tokenBalance || "Unavailable"}
         </p>
       </div>
 
       <div style={{ marginTop: 30 }}>
-        <h3>发送资产</h3>
+        <h3>Send Assets</h3>
 
         <input
-          placeholder="接收地址"
+          placeholder="Recipient address"
           value={toAddress}
           onChange={(e) => setToAddress(e.target.value)}
           style={{
@@ -601,7 +744,7 @@ function App() {
         />
 
         <input
-          placeholder={`金额 (${tokenSymbol} / ETH)`}
+          placeholder={`Amount (${tokenSymbol} or ETH)`}
           value={amount}
           onChange={(e) => setAmount(e.target.value)}
           style={{
@@ -618,7 +761,7 @@ function App() {
             disabled={isLoading}
             style={{ padding: "10px 16px" }}
           >
-            {isLoading ? "处理中..." : "发送 ETH"}
+            {isTxPending("nativeTransfer") ? "Processing..." : "Send ETH"}
           </button>
 
           <button
@@ -626,22 +769,21 @@ function App() {
             disabled={isLoading}
             style={{ padding: "10px 16px" }}
           >
-            {isLoading ? "处理中..." : `发送 ${tokenSymbol}`}
+            {isTxPending("tokenTransfer")
+              ? "Processing..."
+              : `Send ${tokenSymbol}`}
           </button>
         </div>
 
-        {txHash && (
-          <p style={{ marginTop: 16, wordBreak: "break-all" }}>
-            <strong>交易 Hash：</strong>
-            {txHash}
-          </p>
-        )}
+        {renderTxFeedback("nativeTransfer")}
+        {renderTxFeedback("tokenTransfer")}
       </div>
+
       <div style={{ marginTop: 30 }}>
-        <h3>Approve 授权</h3>
+        <h3>Approve Spending</h3>
 
         <input
-          placeholder="Spender 地址"
+          placeholder="Spender address"
           value={spenderAddress}
           onChange={(e) => setSpenderAddress(e.target.value)}
           style={{
@@ -653,7 +795,7 @@ function App() {
         />
 
         <input
-          placeholder={`授权金额 (${tokenSymbol})`}
+          placeholder={`Approval amount (${tokenSymbol})`}
           value={approveAmount}
           onChange={(e) => setApproveAmount(e.target.value)}
           style={{
@@ -670,28 +812,33 @@ function App() {
             disabled={isLoading}
             style={{ padding: "10px 16px" }}
           >
-            查询 Allowance
+            Check Allowance
           </button>
 
           <button
             onClick={approveToken}
-            disabled={isLoading}
+            disabled={
+              isLoading || !account || !approveAmount || !spenderAddress
+            }
             style={{ padding: "10px 16px" }}
           >
-            {isLoading ? "处理中..." : `授权 ${tokenSymbol}`}
+            {isTxPending("approve") ? "Processing..." : `Approve ${tokenSymbol}`}
           </button>
         </div>
 
+        {renderTxFeedback("approve")}
+
         <p style={{ marginTop: 12 }}>
-          <strong>当前 Allowance：</strong>
-          {allowanceValue || "未查询"}
+          <strong>Current Allowance:</strong>
+          {allowanceValue || "Not loaded"}
         </p>
       </div>
+
       <div style={{ marginTop: 30 }}>
-        <h3>Token 存入（TokenBank）</h3>
+        <h3>Deposit to TokenBank</h3>
 
         <input
-          placeholder="存入金额"
+          placeholder="Deposit amount"
           value={depositAmount}
           onChange={(e) => setDepositAmount(e.target.value)}
           style={{
@@ -704,19 +851,21 @@ function App() {
 
         <button
           onClick={depositToken}
-          disabled={isLoading}
+          disabled={isLoading || !account || !depositAmount || !isSepolia}
           style={{ padding: "10px 16px" }}
         >
-          {isLoading ? "处理中..." : "存入 Token"}
+          {isTxPending("deposit") ? "Processing..." : "Deposit Tokens"}
         </button>
 
+        {renderTxFeedback("deposit")}
+
         <p style={{ marginTop: 12 }}>
-          <strong>我的存款：</strong>
+          <strong>My Deposit:</strong>
           {userDeposit || "0"}
         </p>
 
         <p>
-          <strong>合约总余额：</strong>
+          <strong>Vault Balance:</strong>
           {bankBalance || "0"}
         </p>
       </div>
